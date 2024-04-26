@@ -1,3 +1,4 @@
+import datetime
 import os
 import re
 import time
@@ -113,6 +114,55 @@ def find_order_by_phone(phone_number):
     conn.close()
 
 
+def find_order_by_phone_user(phone_number):
+    # Подключение к базе данных
+    conn = pyodbc.connect(
+        'DRIVER={SQL Server};SERVER=DESKTOP-NOO2N4A;DATABASE=PVZ_CHEMP')
+
+    # Создание курсора
+    cursor = conn.cursor()
+
+    # Запрос таблицы Orders
+    query = f"SELECT OrderNumber, ClientPhoneNumber, Status FROM Orders WHERE ClientPhoneNumber = '{phone_number}' AND Status = 'Готов к выдаче'"
+    cursor.execute(query)
+
+    # Получение результата
+    rows = cursor.fetchall()
+
+    if not rows:
+        return "Заказы не найдены."
+
+    orders_info = []
+    for row in rows:
+        order_number, client_phone_number, status = row
+        order_info = {
+            "order_number": order_number,
+            "client_phone_number": client_phone_number,
+            "status": status
+        }
+        orders_info.append(order_info)
+
+    if len(orders_info) == 1:
+        order = orders_info[0]
+        order_data = f"Номер заказа: {order['order_number']}, Номер телефона: 8{order['client_phone_number']}, Статус: {order['status']}"
+        speak_order_data(order_data)
+        # issue_order()
+        with open('order_data.txt', 'w') as file:
+            file.write(
+                f"OrderNumber: {order['order_number']}")
+        return order_data
+    else:
+        result = "\n".join([
+            f"Номер заказа: {order['order_number']}, Номер телефона: {order['client_phone_number']}, Статус: {order['status']}"
+            for order in orders_info])
+        print(f"Найдено {len(orders_info)} заказов.")
+        return result
+
+    # Закрытие курсора и соединения с базой данных
+    cursor.close()
+    conn.close()
+
+
 # Функция для выдачи заказа
 def issue_order():
     recognizer = sr.Recognizer()
@@ -178,25 +228,77 @@ def format_phone_number(phone_number):
     return formatted_number
 
 
-# Функция для поиска заказа по номеру заказа
-def find_order_by_order_number(order_number):
-    # Подключение к базе данных
+def get_highest_cell_id(conn):
+    cursor = conn.cursor()
+    query = "SELECT MAX(CellID) FROM Orders"
+    cursor.execute(query)
+    highest_cell_id = cursor.fetchone()[0]
+    cursor.close()
+    return highest_cell_id if highest_cell_id else 0
+
+
+def add_order(order_number, arrived_date, status, client_phone_number, rack_id, cell_id):
     conn = pyodbc.connect(
         'DRIVER={SQL Server};SERVER=DESKTOP-NOO2N4A;DATABASE=PVZ_CHEMP')
-
-    # Создание курсора
     cursor = conn.cursor()
 
-    # Запрос таблицы Orders
+    insert_query = f"""
+        INSERT INTO Orders (OrderNumber, ArrivedDate, Status, ClientPhoneNumber, RackID, CellID)
+        VALUES ('{order_number}', '{arrived_date}', '{status}', '{client_phone_number}', {rack_id}, {cell_id})
+    """
+    cursor.execute(insert_query)
+    conn.commit()
+
+    cursor.close()
+    conn.close()
+
+
+def find_order_by_order_number(order_number):
+    conn = pyodbc.connect(
+        'DRIVER={SQL Server};SERVER=DESKTOP-NOO2N4A;DATABASE=PVZ_CHEMP')
+    cursor = conn.cursor()
+
     query = (f"SELECT OrderNumber, ArrivedDate, Status, ClientPhoneNumber, RackID, CellID FROM Orders WHERE "
              f"OrderNumber = '{order_number}'")
     cursor.execute(query)
-
-    # Получение результата
     rows = cursor.fetchall()
 
     if not rows:
-        return "Такого номера заказа не найдено."
+        print("Такого номера заказа не найдено.")
+        print("Хотите зарегистрировать новый заказ?")
+        print("Скажите \"Yes\" если хотите, либо \"No\", если нет.")
+        record_txt = recording()
+        if "Yes." in record_txt:
+            print("Хорошо, начнем процесс регистрации нового заказа.")
+            order_number = order_number
+            print(f"Номер заказа: {order_number}")
+            arrived_date = datetime.date.today().strftime('%Y-%m-%d')
+            print(f"Дата: {arrived_date}")
+            status = input("Введите статус: ")
+            client_phone_number = input("Введите номер телефона клиента: ")
+            rack_id = int(input("Введите номер стеллажа: "))
+
+            # Получаем самый высокий номер ячейки в стеллажах
+            highest_cell_id = get_highest_cell_id(conn)
+
+            # Предлагаем пользователю ячейку на основе самого высокого номера ячейки
+            suggested_cell_id = highest_cell_id + 1
+            print(f"Предлагаемая ячейка: {suggested_cell_id}")
+
+            print("Хотите использовать предложенную ячейку?")
+            print("Скажите \"Yes\" если да, либо \"No\", если нет.")
+            record_txt = recording()
+
+            if "Yes." in record_txt:
+                cell_id = suggested_cell_id
+            else:
+                cell_id = int(input("Введите номер ячейки: "))
+
+            add_order(order_number, arrived_date, status, client_phone_number, rack_id, cell_id)
+            print("Заказ успешно зарегистрирован.")
+        elif "No." in record_txt:
+            print("Понял, как скажешь.")
+        return
 
     orders = []
     for row in rows:
@@ -216,7 +318,6 @@ def find_order_by_order_number(order_number):
                      f"Телефон клиента: {orders[0]['client_phone_number']}, " \
                      f"Стеллаж: {orders[0]['rack_id']}, Ячейка: {orders[0]['cell_id']}"
         speak_order_data(order_data)
-        # issue_order()
         with open('order_data.txt', 'w') as file:
             file.write(
                 f"OrderNumber: {orders[0]['order_number']}, RackID: {orders[0]['rack_id']}, CellID: {orders[0]['cell_id']}")
@@ -231,9 +332,21 @@ def find_order_by_order_number(order_number):
                 for
                 order in orders])
 
-    # Закрытие курсора и соединения с базой данных
     cursor.close()
     conn.close()
+
+
+def recording():
+    duration = 5  # Длительность записи в секундах
+    fs = 44100  # Частота дискретизации
+    print("Произнесите вашу команду...")
+    myrecording = sd.rec(int(duration * fs), samplerate=fs, channels=2)
+    for i in range(duration, 0, -1):
+        print(f"Запись завершится через {i} секунд(ы)...")
+        time.sleep(1)
+    sd.wait()  # Ожидание завершения записи
+    wav.write('command.wav', fs, myrecording)  # Сохранение записи в файл
+    return transcribe_audio('command.wav')  # Транскрибация аудио
 
 
 def format_order_number(order_number):
@@ -260,6 +373,11 @@ def main():
         if "Find order." in command_text:
             formatted_number = format_phone_number(phone_number)
             result = find_order_by_phone(formatted_number)
+            if result is not None:
+                print(result)
+        elif "Find order user." in command_text:
+            formatted_number = format_phone_number(phone_number)
+            result = find_order_by_phone_user(formatted_number)
             if result is not None:
                 print(result)
         elif "Issue order." in command_text:
